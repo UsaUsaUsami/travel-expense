@@ -107,16 +107,6 @@ input[type=date]{padding-right:4px}
 .nights.warn{color:var(--danger);background:var(--danger-soft);font-weight:500;font-size:12px}
 .other{display:grid;grid-template-columns:1fr 140px auto;gap:8px;align-items:center;margin-bottom:8px}
 
-/* ---------- attachments ---------- */
-.drop{border:1.5px dashed var(--line-strong);border-radius:10px;padding:18px;text-align:center;color:var(--muted);font-size:13px;cursor:pointer;transition:all .15s}
-.drop:hover,.drop.over{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
-.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-top:12px}
-.thumbs:empty{display:none}
-.thumbs figure{position:relative;margin:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fafafa}
-.thumbs img{display:block;width:100%;height:110px;object-fit:cover}
-.thumbs figcaption{font-size:11px;color:var(--muted);padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.thumbs .ib{position:absolute;top:4px;right:4px;background:rgba(255,255,255,.9)}
-
 /* ---------- combobox ---------- */
 .combo{position:fixed;z-index:50;background:#fff;border:1px solid var(--line-strong);border-radius:10px;box-shadow:0 10px 30px rgba(20,30,60,.16);max-height:300px;overflow:auto;padding:5px;min-width:220px}
 .opt{display:flex;align-items:baseline;gap:10px;padding:8px 10px;border-radius:7px;cursor:pointer}
@@ -188,9 +178,6 @@ dialog::backdrop{background:rgba(20,26,40,.45);backdrop-filter:blur(2px)}
 .tbl tr.sum td{border-top:1pt solid #111;border-bottom:1pt solid #111;font-weight:700;background:#fafafa}
 .tbl .addr{display:block;color:#444;font-size:8.5pt}
 .s-empty{margin-top:30mm;text-align:center;color:#999;font-family:"Noto Sans JP",sans-serif;font-size:10pt;line-height:2}
-.attach-page{margin:14mm -18mm 0;padding:14mm 18mm 0;border-top:1px dashed #bbb}
-.attach-page .cap{margin:0 0 3mm;font-size:9.5pt;font-weight:600}
-.attach-page img{display:block;max-width:100%;max-height:240mm;margin:0 auto;border:.3pt solid #ccc}
 
 @media (max-width:1100px){
   .layout{grid-template-columns:1fr;height:auto}
@@ -221,7 +208,6 @@ dialog::backdrop{background:rgba(20,26,40,.45);backdrop-filter:blur(2px)}
   .preview-pane{display:block;padding:0;overflow:visible;background:none;border:0}
   .sheet-scale{width:auto!important;height:auto!important;overflow:visible}
   .sheet{transform:none!important;box-shadow:none;width:auto;min-height:0;padding:0}
-  .attach-page{break-before:page;margin:0;padding:0;border:0}
   .tbl tr{break-inside:avoid}
 }
 </style>
@@ -252,7 +238,6 @@ dialog::backdrop{background:rgba(20,26,40,.45);backdrop-filter:blur(2px)}
 <div id="combo" class="combo" hidden></div>
 <div id="toast" class="toast" hidden></div>
 <input type="file" id="fileOpen" accept="application/json,.json" hidden>
-<input type="file" id="fileAttach" accept="image/*" multiple hidden>
 
 <dialog id="masterDlg">
   <div class="dlg">
@@ -298,30 +283,28 @@ const emptyMaster = () => ({ profile: { id: '', name: '' }, places: [], routes: 
 const newLine = () => ({ id: uid(), from: '', via: [], to: '', note: '', amount: '' });
 const vias = l => (l.via || []).map(v => v.trim()).filter(Boolean);
 const newDay = (date = '') => ({ id: uid(), date, lines: [newLine()] });
-const emptyDoc = () => ({ title: '請求内訳書', subject: '', issued: today(), days: [newDay(today())], stays: [], others: [], attachments: [] });
+const emptyDoc = () => ({ title: '請求内訳書', subject: '', issued: today(), days: [newDay(today())], stays: [], others: [] });
 
 function normalizeDoc(d) {
   const o = Object.assign(emptyDoc(), d || {});
-  for (const k of ['days', 'stays', 'others', 'attachments']) if (!Array.isArray(o[k])) o[k] = [];
+  delete o.attachments; // dropped feature; older saved files may still carry it
+  for (const k of ['days', 'stays', 'others']) if (!Array.isArray(o[k])) o[k] = [];
   o.days.forEach(day => { day.id ||= uid(); if (!Array.isArray(day.lines)) day.lines = []; day.lines.forEach(l => { l.id ||= uid(); if (!Array.isArray(l.via)) l.via = []; }); });
-  o.stays.forEach(s => s.id ||= uid()); o.others.forEach(s => s.id ||= uid()); o.attachments.forEach(s => s.id ||= uid());
+  o.stays.forEach(s => s.id ||= uid()); o.others.forEach(s => s.id ||= uid());
   return o;
 }
 
 let master = Object.assign(emptyMaster(), load(LS_MASTER, {}));
 let doc = normalizeDoc(load(LS_DOC, null));
 
-let saveTimer, warnedQuota = false;
+let saveTimer;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(LS_MASTER, JSON.stringify(master)); } catch {}
-    try { localStorage.setItem(LS_DOC, JSON.stringify(doc)); }
-    catch {
-      if (!doc.attachments.length) return; // storage unavailable (e.g. private mode): nothing we can do
-      try { localStorage.setItem(LS_DOC, JSON.stringify({ ...doc, attachments: [] })); } catch { return; }
-      if (!warnedQuota) { warnedQuota = true; toast('添付画像が大きいため自動保存から除外しました。「保存」でファイルに残せます'); }
-    }
+    try {
+      localStorage.setItem(LS_MASTER, JSON.stringify(master));
+      localStorage.setItem(LS_DOC, JSON.stringify(doc));
+    } catch {} // storage unavailable (e.g. private mode): the page still works, just without autosave
   }, 250);
 }
 function changed() { updateSums(); renderPreview(); save(); }
@@ -491,12 +474,6 @@ function renderEditor(focusK, flashId) {
     <div class="card-h"><h2>その他の費用</h2><span class="card-sum" data-sum="o"></span></div>
     ${doc.others.map(otherHTML).join('')}
     <button class="add-block" data-act="addOther">＋ 費目を追加（参加費など）</button>
-  </div>
-
-  <div class="card">
-    <div class="card-h"><h2>添付資料<em>任意・PDFの末尾に追加されます</em></h2></div>
-    <div class="drop" data-act="attach">領収書などの画像をドロップ、またはクリックして選択</div>
-    <div class="thumbs">${doc.attachments.map(a => `<figure data-att="${a.id}"><img src="${a.src}" alt=""><figcaption>${esc(a.name)}</figcaption><button class="ib danger" data-act="delAtt" title="削除">${ICON.trash}</button></figure>`).join('')}</div>
   </div>`;
   updateSums();
   if (focusK) { const el = ed.querySelector(`[data-k="${focusK}"]`); if (el) { el.focus(); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } }
@@ -516,12 +493,12 @@ function updateSums() {
 }
 
 function ctx(el) {
-  const dayEl = el.closest('[data-day]'), lineEl = el.closest('[data-line]'), stayEl = el.closest('[data-stay]'), otherEl = el.closest('[data-other]'), attEl = el.closest('[data-att]');
+  const dayEl = el.closest('[data-day]'), lineEl = el.closest('[data-line]'), stayEl = el.closest('[data-stay]'), otherEl = el.closest('[data-other]');
   const day = dayEl && doc.days.find(d => d.id === dayEl.dataset.day);
   const line = lineEl && day && day.lines.find(l => l.id === lineEl.dataset.line);
   const stay = stayEl && doc.stays.find(s => s.id === stayEl.dataset.stay);
   const other = otherEl && doc.others.find(o => o.id === otherEl.dataset.other);
-  return { dayEl, lineEl, day, line, stayEl, stay, otherEl, other, attId: attEl && attEl.dataset.att };
+  return { dayEl, lineEl, day, line, stayEl, stay, otherEl, other };
 }
 // Applies the remembered route to a line and updates its DOM. Returns the (possibly
 // replaced) line element, or null when nothing was filled.
@@ -608,11 +585,6 @@ ed.addEventListener('keydown', e => {
 
 ed.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (b) act(b.dataset.act, b); });
 
-ed.addEventListener('dragover', e => { const d = e.target.closest('.drop'); if (d) { e.preventDefault(); d.classList.add('over'); } });
-ed.addEventListener('dragleave', e => { const d = e.target.closest('.drop'); if (d) d.classList.remove('over'); });
-ed.addEventListener('drop', e => { const d = e.target.closest('.drop'); if (d) { e.preventDefault(); d.classList.remove('over'); addFiles(e.dataTransfer.files); } });
-window.addEventListener('dragover', e => e.preventDefault());
-window.addEventListener('drop', e => e.preventDefault());
 
 /* ---------- undo ---------- */
 let undoSnap = null;
@@ -663,8 +635,6 @@ function act(a, el) {
     case 'delStay': snapshot(); doc.stays = doc.stays.filter(s => s !== c.stay); renderEditor(); changed(); toastUndo('宿泊を削除しました'); break;
     case 'addOther': { const o = { id: uid(), name: '', amount: '' }; doc.others.push(o); renderEditor(`${o.id}.name`); changed(); break; }
     case 'delOther': snapshot(); doc.others = doc.others.filter(o => o !== c.other); renderEditor(); changed(); toastUndo('費目を削除しました'); break;
-    case 'attach': $('#fileAttach').click(); break;
-    case 'delAtt': snapshot(); doc.attachments = doc.attachments.filter(a => a.id !== c.attId); renderEditor(); changed(); toastUndo('添付を削除しました'); break;
   }
 }
 
@@ -814,7 +784,6 @@ function renderPreview() {
       </tbody></table></section>`;
     }
   }
-  h += doc.attachments.map((a, i) => `<div class="attach-page"><p class="cap">添付資料 ${i + 1}　${esc(a.name)}</p><img src="${a.src}" alt=""></div>`).join('');
   sheet.innerHTML = h;
   fitPreview();
 }
@@ -903,7 +872,7 @@ $('#mBody').addEventListener('click', e => {
 });
 
 /* =========================================================
-   files: save / open / attachments / print
+   files: save / open / print
    ========================================================= */
 function download(name, text) {
   const a = document.createElement('a');
@@ -943,28 +912,6 @@ window.addEventListener('beforeprint', () => { oldTitle = document.title; docume
 window.addEventListener('afterprint', () => { document.title = oldTitle; });
 window.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveJSON(); } });
 
-$('#fileAttach').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
-async function addFiles(files) {
-  let added = 0;
-  for (const f of files) {
-    if (!f.type.startsWith('image/')) { toast('画像ファイルのみ添付できます（PDFはスクリーンショットにしてください）'); continue; }
-    try { doc.attachments.push({ id: uid(), name: f.name, src: await shrink(f) }); added++; } catch { toast(`「${f.name}」を読み込めませんでした`); }
-  }
-  if (added) { renderEditor(); changed(); }
-}
-function shrink(file) {
-  return new Promise((res, rej) => {
-    const img = new Image(), url = URL.createObjectURL(file);
-    img.onload = () => {
-      const s = Math.min(1, 1800 / Math.max(img.width, img.height));
-      const c = document.createElement('canvas'); c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
-      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', .85));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); rej(); };
-    img.src = url;
-  });
-}
 
 /* ---------- toast ---------- */
 let toastTimer;
