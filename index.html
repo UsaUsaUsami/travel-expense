@@ -279,18 +279,23 @@ const ICON = {
 const LS_DOC = 'seikyu.doc.v1', LS_MASTER = 'seikyu.master.v1';
 const load = (k, fb) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch { return fb; } };
 
-const emptyMaster = () => ({ profile: { id: '', name: '' }, places: [], routes: {}, hotels: [], others: [] });
+const emptyMaster = () => ({ profile: { id: '', name: '' }, places: [], routes: {}, hotels: [], fees: [], others: [] });
+// Simple "name + amount" expense lists. Each has its own section, master list and PDF table.
+const ITEM_LISTS = {
+  fees: { title: '参加費', add: '＋ 参加費を追加', ph: '名称（例：〇〇学会 参加費）', hint: '「参加費」に入力した名称は自動で登録されます。金額は次回の初期値になります。' },
+  others: { title: 'その他', add: '＋ 費目を追加（資料代など）', ph: '費目（例：資料代）', hint: '「その他の費用」に入力した費目は自動で登録されます。金額は次回の初期値になります。' },
+};
 const newLine = () => ({ id: uid(), from: '', via: [], to: '', note: '', amount: '' });
 const vias = l => (l.via || []).map(v => v.trim()).filter(Boolean);
 const newDay = (date = '') => ({ id: uid(), date, lines: [newLine()] });
-const emptyDoc = () => ({ title: '請求内訳書', subject: '', issued: today(), days: [newDay(today())], stays: [], others: [] });
+const emptyDoc = () => ({ title: '請求内訳書', subject: '', issued: today(), days: [newDay(today())], stays: [], fees: [], others: [] });
 
 function normalizeDoc(d) {
   const o = Object.assign(emptyDoc(), d || {});
   delete o.attachments; // dropped feature; older saved files may still carry it
-  for (const k of ['days', 'stays', 'others']) if (!Array.isArray(o[k])) o[k] = [];
+  for (const k of ['days', 'stays', 'fees', 'others']) if (!Array.isArray(o[k])) o[k] = [];
   o.days.forEach(day => { day.id ||= uid(); if (!Array.isArray(day.lines)) day.lines = []; day.lines.forEach(l => { l.id ||= uid(); if (!Array.isArray(l.via)) l.via = []; }); });
-  o.stays.forEach(s => s.id ||= uid()); o.others.forEach(s => s.id ||= uid());
+  o.stays.forEach(s => s.id ||= uid()); o.fees.forEach(s => s.id ||= uid()); o.others.forEach(s => s.id ||= uid());
   return o;
 }
 
@@ -337,11 +342,11 @@ function upsertHotel(s) {
   if (h) { if (s.postal) h.postal = s.postal; if (s.address) h.address = s.address; }
   else master.hotels.push({ id: uid(), name, postal: s.postal, address: s.address, count: 1, last: Date.now() });
 }
-function upsertOther(o) {
+function upsertItem(list, o) {
   const name = o.name.trim(); if (!name) return;
-  const m = master.others.find(x => x.name === name);
+  const m = master[list].find(x => x.name === name);
   if (m) { if (o.amount !== '') m.amount = o.amount; }
-  else master.others.push({ id: uid(), name, amount: o.amount, count: 1, last: Date.now() });
+  else master[list].push({ id: uid(), name, amount: o.amount, count: 1, last: Date.now() });
 }
 function renamePlace(oldN, newN) {
   for (const [k, r] of Object.entries(master.routes)) {
@@ -369,17 +374,17 @@ function mergeMaster(m) {
     const ex = master.hotels.find(x => x.name === h.name);
     if (ex) { ex.postal ||= h.postal; ex.address ||= h.address; } else master.hotels.push({ ...h, id: h.id || uid() });
   }
-  for (const o of m.others || []) {
-    const ex = master.others.find(x => x.name === o.name);
-    if (ex) { if (ex.amount === '' || ex.amount == null) ex.amount = o.amount; } else master.others.push({ ...o, id: o.id || uid() });
+  for (const list of Object.keys(ITEM_LISTS)) for (const o of m[list] || []) {
+    const ex = master[list].find(x => x.name === o.name);
+    if (ex) { if (ex.amount === '' || ex.amount == null) ex.amount = o.amount; } else master[list].push({ ...o, id: o.id || uid() });
   }
 }
 
 function totals() {
-  const t = doc.days.reduce((a, d) => a + d.lines.reduce((b, l) => b + (+l.amount || 0), 0), 0);
-  const s = doc.stays.reduce((a, x) => a + (+x.amount || 0), 0);
-  const o = doc.others.reduce((a, x) => a + (+x.amount || 0), 0);
-  return { t, s, o, g: t + s + o };
+  const sum = arr => arr.reduce((a, x) => a + (+x.amount || 0), 0);
+  const t = doc.days.reduce((a, d) => a + sum(d.lines), 0);
+  const s = sum(doc.stays), f = sum(doc.fees), o = sum(doc.others);
+  return { t, s, f, o, g: t + s + f + o };
 }
 
 /* =========================================================
@@ -435,12 +440,18 @@ const stayHTML = s => {
 </div>`;
 };
 
-const otherHTML = o => `
-<div class="other" data-other="${o.id}">
-  <input data-of="name" data-combo="other" data-k="${o.id}.name" value="${esc(o.name)}" placeholder="費目（例：講演会参加費）" autocomplete="off">
+const itemHTML = list => o => `
+<div class="other" data-list="${list}" data-item="${o.id}">
+  <input data-of="name" data-combo="${list}" data-k="${o.id}.name" value="${esc(o.name)}" placeholder="${ITEM_LISTS[list].ph}" autocomplete="off">
   <label class="amt"><input data-of="amount" data-k="${o.id}.amount" value="${fmtNum(o.amount)}" inputmode="numeric" placeholder="0" autocomplete="off"><span>円</span></label>
-  <button class="ib danger" data-act="delOther" title="削除">${ICON.trash}</button>
+  <button class="ib danger" data-act="delItem" title="削除">${ICON.trash}</button>
 </div>`;
+const itemCardHTML = (list, heading, sumKey) => `
+  <div class="card">
+    <div class="card-h"><h2>${heading}</h2><span class="card-sum" data-sum="${sumKey}"></span></div>
+    ${doc[list].map(itemHTML(list)).join('')}
+    <button class="add-block" data-act="addItem" data-list="${list}">${ITEM_LISTS[list].add}</button>
+  </div>`;
 
 function renderEditor(focusK, flashId) {
   closeCombo();
@@ -469,12 +480,8 @@ function renderEditor(focusK, flashId) {
     ${doc.stays.map(stayHTML).join('')}
     <button class="add-block" data-act="addStay">＋ 宿泊を追加</button>
   </div>
-
-  <div class="card">
-    <div class="card-h"><h2>その他の費用</h2><span class="card-sum" data-sum="o"></span></div>
-    ${doc.others.map(otherHTML).join('')}
-    <button class="add-block" data-act="addOther">＋ 費目を追加（参加費など）</button>
-  </div>`;
+  ${itemCardHTML('fees', '参加費', 'f')}
+  ${itemCardHTML('others', 'その他の費用', 'o')}`;
   updateSums();
   if (focusK) { const el = ed.querySelector(`[data-k="${focusK}"]`); if (el) { el.focus(); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } }
   if (flashId) { const el = ed.querySelector(`[data-line="${flashId}"]`); if (el) el.classList.add('flash'); }
@@ -488,17 +495,18 @@ function updateSums() {
     el.textContent = s ? `小計 ${yen(s)}` : '';
   });
   const set = (k, v) => { const el = ed.querySelector(`[data-sum="${k}"]`); if (el) el.textContent = v ? yen(v) : ''; };
-  set('t', T.t); set('s', T.s); set('o', T.o);
+  set('t', T.t); set('s', T.s); set('f', T.f); set('o', T.o);
   $('#grandTop').textContent = yen(T.g);
 }
 
 function ctx(el) {
-  const dayEl = el.closest('[data-day]'), lineEl = el.closest('[data-line]'), stayEl = el.closest('[data-stay]'), otherEl = el.closest('[data-other]');
+  const dayEl = el.closest('[data-day]'), lineEl = el.closest('[data-line]'), stayEl = el.closest('[data-stay]'), otherEl = el.closest('[data-item]');
   const day = dayEl && doc.days.find(d => d.id === dayEl.dataset.day);
   const line = lineEl && day && day.lines.find(l => l.id === lineEl.dataset.line);
   const stay = stayEl && doc.stays.find(s => s.id === stayEl.dataset.stay);
-  const other = otherEl && doc.others.find(o => o.id === otherEl.dataset.other);
-  return { dayEl, lineEl, day, line, stayEl, stay, otherEl, other };
+  const list = otherEl && otherEl.dataset.list;
+  const other = otherEl && doc[list].find(o => o.id === otherEl.dataset.item);
+  return { dayEl, lineEl, day, line, stayEl, stay, otherEl, other, list };
 }
 // Applies the remembered route to a line and updates its DOM. Returns the (possibly
 // replaced) line element, or null when nothing was filled.
@@ -566,7 +574,7 @@ ed.addEventListener('focusout', e => {
   }
   if (el.dataset.f === 'amount' || el.dataset.sf === 'amount' || el.dataset.of === 'amount') el.value = fmtNum(parseAmount(el.value));
   if (c.stay) upsertHotel(c.stay);
-  if (c.other) upsertOther(c.other);
+  if (c.other) upsertItem(c.list, c.other);
   save();
 });
 
@@ -633,8 +641,8 @@ function act(a, el) {
       doc.stays.push(s); renderEditor(`${s.id}.name`); changed(); break;
     }
     case 'delStay': snapshot(); doc.stays = doc.stays.filter(s => s !== c.stay); renderEditor(); changed(); toastUndo('宿泊を削除しました'); break;
-    case 'addOther': { const o = { id: uid(), name: '', amount: '' }; doc.others.push(o); renderEditor(`${o.id}.name`); changed(); break; }
-    case 'delOther': snapshot(); doc.others = doc.others.filter(o => o !== c.other); renderEditor(); changed(); toastUndo('費目を削除しました'); break;
+    case 'addItem': { const o = { id: uid(), name: '', amount: '' }; doc[el.dataset.list].push(o); renderEditor(`${o.id}.name`); changed(); break; }
+    case 'delItem': snapshot(); doc[c.list] = doc[c.list].filter(o => o !== c.other); renderEditor(); changed(); toastUndo(`${ITEM_LISTS[c.list].title}を削除しました`); break;
   }
 }
 
@@ -648,7 +656,7 @@ function comboItems(kind, raw) {
   const q = raw.trim(), ql = q.toLowerCase();
   const src = kind === 'place' ? master.places.map(p => ({ value: p.name, sub: p.label, count: p.count || 0, last: p.last || 0 }))
     : kind === 'hotel' ? master.hotels.map(h => ({ value: h.name, sub: h.address, count: h.count || 0, last: h.last || 0 }))
-    : master.others.map(o => ({ value: o.name, sub: (o.amount === '' || o.amount == null) ? '' : yen(o.amount), count: o.count || 0, last: o.last || 0 }));
+    : master[kind].map(o => ({ value: o.name, sub: (o.amount === '' || o.amount == null) ? '' : yen(o.amount), count: o.count || 0, last: o.last || 0 }));
   const items = src.map(it => {
     const v = it.value.toLowerCase(), s = (it.sub || '').toLowerCase();
     const sc = !ql ? 1 : v === ql ? 5 : v.startsWith(ql) ? 4 : v.includes(ql) ? 3 : s.includes(ql) ? 2 : -1;
@@ -671,7 +679,7 @@ function paintCombo() {
     if (s.kind === 'place' && !s.input.value.trim()) combo.innerHTML = `<div class="combo-empty">地点はまだ登録されていません。<br>名前を入力すると自動で登録されます。</div>`;
     else { combo.hidden = true; return; }
   } else {
-    const head = !s.typed && s.items.length ? `<div class="combo-head">${s.kind === 'place' ? '登録済みの地点（よく使う順）' : s.kind === 'hotel' ? '過去の宿泊先' : '過去の費目'}</div>` : '';
+    const head = !s.typed && s.items.length ? `<div class="combo-head">${s.kind === 'place' ? '登録済みの地点（よく使う順）' : s.kind === 'hotel' ? '過去の宿泊先' : `過去の${ITEM_LISTS[s.kind].title}`}</div>` : '';
     combo.innerHTML = head + s.items.map((it, i) => it.add
       ? `<div class="opt add ${i === s.idx ? 'on' : ''}" data-i="${i}"><span class="m">＋「${esc(it.value)}」を地点に登録</span></div>`
       : `<div class="opt ${i === s.idx ? 'on' : ''}" data-i="${i}"><span class="m">${esc(it.value)}</span>${it.sub ? `<span class="s">${esc(it.sub)}</span>` : ''}</div>`).join('');
@@ -715,7 +723,7 @@ function comboSelect(it, move) {
     changed(); if (move) c.stayEl.querySelector('[data-sf=amount]').focus();
   } else {
     c.other.name = it.value;
-    const m = master.others.find(x => x.name === it.value);
+    const m = master[kind].find(x => x.name === it.value);
     if (m) { touch(m); if (c.other.amount === '' && m.amount !== '' && m.amount != null) { c.other.amount = m.amount; c.otherEl.querySelector('[data-of=amount]').value = fmtNum(m.amount); } }
     changed(); if (move) c.otherEl.querySelector('[data-of=amount]').focus();
   }
@@ -729,7 +737,8 @@ function renderPreview() {
   const T = totals(), p = master.profile;
   const days = doc.days.map(d => ({ ...d, lines: d.lines.filter(l => l.from || l.to || l.note || l.amount !== '') })).filter(d => d.lines.length);
   const stays = doc.stays.filter(s => s.name || s.amount !== '');
-  const others = doc.others.filter(o => o.name || o.amount !== '');
+  const filled = arr => arr.filter(o => o.name || o.amount !== '');
+  const fees = filled(doc.fees), others = filled(doc.others);
   let no = 0;
   let h = `
   <div class="s-head">
@@ -742,12 +751,13 @@ function renderPreview() {
   </div>
   ${doc.subject ? `<p class="s-subject">件名：${esc(doc.subject)}</p>` : ''}`;
 
-  if (!days.length && !stays.length && !others.length) {
+  if (!days.length && !stays.length && !fees.length && !others.length) {
     h += `<div class="s-empty">左のフォームに入力すると、<br>ここに請求内訳書ができあがっていきます。</div>`;
   } else {
     const parts = [];
     if (days.length) parts.push(`交通費 ${yen(T.t)}`);
     if (stays.length) parts.push(`宿泊費 ${yen(T.s)}`);
+    if (fees.length) parts.push(`参加費 ${yen(T.f)}`);
     if (others.length) parts.push(`その他 ${yen(T.o)}`);
     h += `<div class="s-total"><div class="lbl">請求金額合計</div><div class="val">${yen(T.g)}</div></div>
           <div class="s-break">${parts.map(esc).join('<span>／</span>')}</div>`;
@@ -775,14 +785,13 @@ function renderPreview() {
       <tr class="sum"><td colspan="2" class="r">宿泊費 合計</td><td class="r">${yen(T.s)}</td></tr>
       </tbody></table></section>`;
     }
-    if (others.length) {
-      h += `<section class="s-sec keep"><h2><span class="no">${++no}</span>その他</h2>
+    const itemSection = (items, title, colName, total) => items.length ? `<section class="s-sec keep"><h2><span class="no">${++no}</span>${title}</h2>
       <table class="tbl"><colgroup><col><col style="width:24mm"></colgroup>
-      <thead><tr><th>費目</th><th class="r">金額</th></tr></thead><tbody>
-      ${others.map(o => `<tr><td>${esc(o.name)}</td><td class="r">${o.amount === '' ? '' : yen(o.amount)}</td></tr>`).join('')}
-      <tr class="sum"><td class="r">その他 合計</td><td class="r">${yen(T.o)}</td></tr>
-      </tbody></table></section>`;
-    }
+      <thead><tr><th>${colName}</th><th class="r">金額</th></tr></thead><tbody>
+      ${items.map(o => `<tr><td>${esc(o.name)}</td><td class="r">${o.amount === '' ? '' : yen(o.amount)}</td></tr>`).join('')}
+      <tr class="sum"><td class="r">${title} 合計</td><td class="r">${yen(total)}</td></tr>
+      </tbody></table></section>` : '';
+    h += itemSection(fees, '参加費', '名称', T.f) + itemSection(others, 'その他', '費目', T.o);
   }
   sheet.innerHTML = h;
   fitPreview();
@@ -802,7 +811,7 @@ new ResizeObserver(fitPreview).observe(sheet);
    ========================================================= */
 const dlg = $('#masterDlg');
 let mTab = 'places';
-const TABS = [['places', '地点'], ['routes', '記憶した区間'], ['hotels', '宿泊先'], ['others', 'その他の費目']];
+const TABS = [['places', '地点'], ['routes', '記憶した区間'], ['hotels', '宿泊先'], ['fees', '参加費'], ['others', 'その他の費目']];
 function renderMaster() {
   const count = k => k === 'routes' ? Object.keys(master.routes).length : master[k].length;
   $('#mTabs').innerHTML = TABS.map(([k, n]) => `<button class="tab ${k === mTab ? 'on' : ''}" data-tab="${k}">${n}<small>${count(k)}</small></button>`).join('');
@@ -827,9 +836,9 @@ function renderMaster() {
       ${master.hotels.map(x => `<tr data-id="${x.id}"><td><input data-m="name" value="${esc(x.name)}"></td><td style="width:110px"><input data-m="postal" value="${esc(x.postal)}"></td><td><input data-m="address" value="${esc(x.address)}"></td><td>${del}</td></tr>`).join('')}
       </tbody></table>` : '<p class="empty">まだ登録がありません</p>'}`;
   } else {
-    h = `<p class="hint">「その他の費用」に入力した費目は自動で登録されます。金額は次回の初期値になります。</p>
-      ${master.others.length ? `<table class="mtbl"><thead><tr><th>費目</th><th class="r">既定の金額</th><th></th></tr></thead><tbody>
-      ${master.others.map(x => `<tr data-id="${x.id}"><td><input data-m="name" value="${esc(x.name)}"></td><td style="width:140px"><span class="amt"><input data-m="amount" value="${fmtNum(x.amount)}" inputmode="numeric"><span>円</span></span></td><td>${del}</td></tr>`).join('')}
+    h = `<p class="hint">${ITEM_LISTS[mTab].hint}</p>
+      ${master[mTab].length ? `<table class="mtbl"><thead><tr><th>${mTab === 'fees' ? '名称' : '費目'}</th><th class="r">既定の金額</th><th></th></tr></thead><tbody>
+      ${master[mTab].map(x => `<tr data-id="${x.id}"><td><input data-m="name" value="${esc(x.name)}"></td><td style="width:140px"><span class="amt"><input data-m="amount" value="${fmtNum(x.amount)}" inputmode="numeric"><span>円</span></span></td><td>${del}</td></tr>`).join('')}
       </tbody></table>` : '<p class="empty">まだ登録がありません</p>'}`;
   }
   $('#mBody').innerHTML = h;
